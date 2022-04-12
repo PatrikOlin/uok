@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"encoding/gob"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -25,6 +27,7 @@ var (
 	status      = lipgloss.NewStyle().Foreground(special).Render
 	issueStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Blink(true).Render
 )
+var stateGob = ".uok_state.gob"
 
 func init() {
 	pflag.StringVarP(&token, "gotify token", "t", "", "the gotify token used for sending notifications to gotify")
@@ -45,20 +48,34 @@ func main() {
 	}
 
 	printBanner()
-	var failed []string
+	var down []string
 	for key, value := range res {
 		if strings.Contains(value, "200") {
 			fmt.Println(style.Bold(false).Render(status(value) + "   " + key))
 		} else {
 			fmt.Println(style.Bold(true).Render(issueStatus(value) + "   " + key))
 
-			failed = append(failed, fmt.Sprintf("%s returned %s", key, value))
+			down = append(down, fmt.Sprintf("%s returned %s", key, value))
 		}
 	}
 
 	if token != "" {
-		notify(failed)
+		prevState, err := load()
+		if errors.Is(err, os.ErrNotExist) {
+			notify(down)
+		} else if err != nil {
+			log.Fatalln(err)
+		} else {
+			filtered := filter(down, prevState)
+			fmt.Println("failed without duplicates, ", filtered)
+
+			if len(filtered) > 0 {
+				notify(filtered)
+			}
+		}
 	}
+
+	save(down)
 }
 
 func getURLs() ([]string, error) {
@@ -98,4 +115,53 @@ func printBanner() {
 	fig := figure.NewFigure("u ok?", "slant", true)
 	fig.Print()
 	fmt.Println()
+}
+
+func save(slice []string) {
+	m := make(map[string]string)
+	for _, x := range slice {
+		x := strings.Split(x, " ")[0]
+		m[x] = x
+	}
+
+	file, err := os.Create(stateGob)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	encoder := gob.NewEncoder(file)
+	encoder.Encode(m)
+}
+
+func load() (map[string]string, error) {
+	var data map[string]string
+
+	file, err := os.Open(stateGob)
+	if err != nil {
+		return data, err
+	}
+	defer file.Close()
+
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(&data)
+
+	if err != nil {
+		return data, err
+	}
+
+	return data, nil
+}
+
+func filter(s []string, m map[string]string) []string {
+	var filtered []string
+	for i, val := range s {
+		x := strings.Split(val, " ")[0]
+		if _, ok := m[x]; !ok {
+			filtered = append(filtered, s[i])
+		}
+
+	}
+	return filtered
 }
